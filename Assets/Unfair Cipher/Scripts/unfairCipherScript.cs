@@ -54,13 +54,13 @@ public class unfairCipherScript : MonoBehaviour
 
 
     bool solved;
-    bool TwitchZenMode;
+    bool ZenModeActive;
     private bool TwitchPlaysSkipTimeAllowed = true;
     bool TimeModeActive;
     bool live = false;
     bool idScreenShow = true;
 
-    private static string version = "1.1.5.3"; // Updated Jun 07 2021
+    private static string version = "1.1.5.4"; // Updated Jan 16 2026
     private string[] orders = { "PCR", "PCG", "PCB", "SUB", "MIT", "CHK", "PRN", "BOB", "REP", "EAT", "STR", "IKE" };
     string[] Message = new string[4];
     private string message;
@@ -229,7 +229,9 @@ public class unfairCipherScript : MonoBehaviour
 
 
 
-    public string TwitchHelpMessage = "To press a button, use “!{0} press R, G, B, Inner or Outer”. Press the screen with “!{0} press screen“. To press a button at a specified time, use “at <time>”, for example “!{0} press Center at 0:44”";
+    public string TwitchHelpMessage = "Select the given button with “!{0} press R(ed);G(reen);B(lue);Inner;Outer” " +
+        "To time a specific press, specify as many time stamps based only on seconds digits (##), full time stamp (DD:HH:MM:SS), or MM:SS where MM exceeds 99 min. " +
+        "Press the screen with, “!{0} screen” Semicolons can be used to combine presses, both untimed and timed. (Example: “!{0} r 50 40 30 20 10 00;outer;inner”)";
 
 #pragma warning restore 0414
 
@@ -243,139 +245,245 @@ public class unfairCipherScript : MonoBehaviour
 
     public IEnumerator ProcessTwitchCommand(string cmd)
     {
-        if (solved)
+        if (solved || !live)
         {
+            yield return "sendtochaterror The module is not accepting inputs right now.";
             yield break;
         }
-        
-        var match = Regex.Match(cmd, @"^\s*(?:press\s+)?(R|G|B|Inner|Outer|Screen)(\s+(?:(at|on)\s+(([0-9]+):([0-5][0-9]))))?\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var intCmd = cmd.ToLowerInvariant().Trim();
+        var timeStampsCmdPart = new List<List<long>>();
+        var intCmdParts = intCmd.Split(';');
+        var btnsToPress = new List<KMSelectable>();
 
-        if (!match.Success)
-        {
-            yield return @"sendtochaterror Input unrecognized. Use R, G, B, Screen, Inner or Outer, case insensitive";
-            yield break;
-        }
+        var multiplierTimes = new[] { 1, 60, 3600, 86400 }; // To denote seconds, minutes, hours, days in seconds.
 
-        KMSelectable buttonSelectable = null;
-
-        var buttonName = match.Groups[1].Value;
-
-        if (buttonName.Equals("R", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("r", StringComparison.InvariantCultureIgnoreCase))
+        foreach (string cmdPart in intCmdParts)
         {
-            buttonSelectable = buttons[0];
-        }
-        else if (buttonName.Equals("G", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("g", StringComparison.InvariantCultureIgnoreCase))
-        {
-            buttonSelectable = buttons[1];
-        }
-        else if (buttonName.Equals("B", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("b", StringComparison.InvariantCultureIgnoreCase))
-        {
-            buttonSelectable = buttons[2];
-        }
-        else if (buttonName.Equals("Inner", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("inner", StringComparison.InvariantCultureIgnoreCase))
-        {
-            buttonSelectable = buttons[3];
-        }
-        else if (buttonName.Equals("Outer", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("outer", StringComparison.InvariantCultureIgnoreCase))
-        {
-            buttonSelectable = buttons[4];
-        }
-        else if (buttonName.Equals("Screen", StringComparison.InvariantCultureIgnoreCase) || buttonName.Equals("screen", StringComparison.InvariantCultureIgnoreCase))
-        {
-            buttonSelectable = buttons[5];
-            if (match.Groups[2].Success)
+            var partTrimmed = cmdPart.Trim();
+            if (partTrimmed.RegexMatch(@"^press "))
+                partTrimmed = partTrimmed.Substring(5).Trim();
+            var partOfPartTrimmed = partTrimmed.Split();
+            if (Regex.IsMatch(partTrimmed, @"^(R(ed)?|G(reen)?|B(lue)?|Inner|Outer|Screen)(\s+(at|on))?(\s+(([0-9]+)(:[0-5][0-9]){1,3}))+$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
             {
-                yield return null;
-                buttonSelectable.OnInteract();
-                yield return @"sendtochat /me Kappa was it really necessary to schedule a screen press {0}?";
-                yield break;
+                var possibleTimes = new List<long>();
+                var timeStamps = partOfPartTrimmed.Where(a => a.RegexMatch(@"^[0-9]+(:[0-5][0-9]){1,3}$")).ToList();
+                foreach (string aTime in timeStamps)
+                {
+                    var curTimePart = aTime.Split(':').Reverse().ToArray();
+                    long curTime = 0;
+                    for (var idx = 0; idx < curTimePart.Length; idx++)
+                    {
+                        long possibleValue;
+                        if (!long.TryParse(curTimePart[idx], out possibleValue))
+                        {
+                            yield return string.Format("sendtochaterror The command portion: \"{0}\" contains an uncalculatable time. The full command has been voided.", cmdPart);
+                            yield break;
+                        }
+                        curTime += multiplierTimes[idx] * possibleValue;
+                    }
+                    possibleTimes.Add(curTime);
+                }
+                possibleTimes = possibleTimes.Where(a => ZenModeActive ? a > Bomb.GetTime() : a < Bomb.GetTime()).ToList();
+
+                if (possibleTimes.Any())
+                    timeStampsCmdPart.Add(possibleTimes);
+                else
+                {
+                    yield return string.Format("sendtochaterror The command portion: \"{0}\" gave no possible times for this module. The full command has been voided.", cmdPart);
+                    yield break;
+                }
             }
-        }
-        else
-        {
-            yield break;
-        }
-
-        if (buttonSelectable == null)
-        {
-            yield break;
-        }
-
-
-
-        if (live)
-        {
-            if (match.Groups[2].Success)
+            else if (Regex.IsMatch(partTrimmed, @"^(R(ed)?|G(reen)?|B(lue)?|Inner|Outer|Screen)(\s+(at|on))?(\s+[0-5][0-9])+$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
             {
-
-
-                //DebugMsg("User input: press " + buttonSelectable.name + " 1 (at) 2 " + match.Groups[2] + " 2, 3 " + match.Groups[3] + " 3, 4 " + match.Groups[4] + " 4, 5 " + match.Groups[5] + " 5 seconds");
-
-
-
-                int secs = 60 * int.Parse(match.Groups[5].Value) + int.Parse(match.Groups[6].Value);
-
-                //DebugMsg("User input: press " + buttonSelectable.name + " at " + " seconds");
-
-
-
-
-                //int curtime = (int)Bomb.GetTime();
-                //int icurtime = Mathf.FloorToInt(curtime);
-
-                if (!TwitchZenMode)
+                var possibleTimes = new List<long>();
+                var curMinRemaining = (long)Bomb.GetTime() / 60;
+                var timeStamps = partOfPartTrimmed.Where(a => a.RegexMatch(@"^[0-5][0-9]$")).ToList(); // Filter out all that are 00-59 inclusive.
+                foreach (var secondsPart in timeStamps)
                 {
-                    if (Mathf.FloorToInt(Bomb.GetTime()) < secs) yield break;
+                    int secondsTime = int.Parse(secondsPart); // Always within 0 - 59 inclusive due to restricting the via the regex above.
+                    for (long t = curMinRemaining - (ZenModeActive ? 0 : 2); t <= curMinRemaining + (ZenModeActive ? 2 : 0); t++)
+                    {
+                        var newTime = t * 60 + secondsTime;
+                        if ((ZenModeActive && newTime > Bomb.GetTime()) ||
+                            (!ZenModeActive && newTime < Bomb.GetTime()))
+                            // If Zen mode is active, check if the new time is larger than the current time.
+                            // If Zen mode is inactive, check if the new time is shorter than the current time.
+                            possibleTimes.Add(newTime);
+                    }
                 }
+
+                if (possibleTimes.Any())
+                    timeStampsCmdPart.Add(possibleTimes);
                 else
                 {
-                    if (Mathf.FloorToInt(Bomb.GetTime()) > secs) yield break;
+                    yield return string.Format("sendtochaterror The command portion: \"{0}\" gave no possible times for this module. The full command has been voided.", cmdPart);
+                    yield break;
                 }
-
-                var timeSkip = secs;
-                bool music = false;
-                if (TwitchZenMode)
-                {
-                    timeSkip = secs - 5;
-                    if (secs - Bomb.GetTime() > 15) yield return "skiptime " + timeSkip;
-                    if (secs - Bomb.GetTime() > 10) music = true;
-                }
-                else
-                {
-                    timeSkip = secs + 5;
-                    if (Bomb.GetTime() - secs > 15) yield return "skiptime " + timeSkip;
-                    if (Bomb.GetTime() - secs > 10) music = true;
-                }
-
-                if (music) yield return "waiting music";
-                while (Mathf.FloorToInt(Bomb.GetTime()) != secs) yield return "trycancel Button not pressed due to cancel request";
-                if (music) yield return "end waiting music";
-                yield return null;
-
-                if (!TwitchZenMode)
-                {
-                    if (Mathf.FloorToInt(Bomb.GetTime()) < secs) yield break;
-                }
-                else
-                {
-                    if (Mathf.FloorToInt(Bomb.GetTime()) > secs) yield break;
-                } // *Should* get rid of "unsync" strikes due to sending commands right on the specified timeframe. (Thanks @red031000)
-
-                buttonSelectable.OnInteract();
-                yield return new WaitForSeconds(0.1f);
-                //DebugMsg("Twitch Debug Output: " + buttonName + ", " + secs);
-
-
             }
+            else if (Regex.IsMatch(partTrimmed, @"^(R(ed)?|G(reen)?|B(lue)?|Inner|Outer|Screen)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
+                timeStampsCmdPart.Add(new List<long>());
             else
             {
-                yield return null;
-                buttonSelectable.OnInteract();
-                yield return new WaitForSeconds(0.1f);
+                yield return string.Format("sendtochaterror The command portion: \"{0}\" is not valid. Check your command for typos.", cmdPart);
+                yield break;
             }
-
+            // This entire part below is for adding what button to press for this module to perform.
+            switch (partOfPartTrimmed[0])
+            {
+                case "r":
+                case "red":
+                    btnsToPress.Add(buttons[0]); // Red
+                    break;
+                case "g":
+                case "green":
+                    btnsToPress.Add(buttons[1]); // Green
+                    break;
+                case "b":
+                case "blue":
+                    btnsToPress.Add(buttons[2]); // Blue
+                    break;
+                case "inner":
+                    btnsToPress.Add(buttons[3]); // Inner "Center"
+                    break;
+                case "outer":
+                    btnsToPress.Add(buttons[4]); // "Outer" Center
+                    break;
+                case "screen":
+                    btnsToPress.Add(buttons[5]); // Screen
+                    break;
+                default:
+                    yield break;
+            }
         }
 
+        if (btnsToPress.Any())
+        {
+            var willStrike = false;
+            yield return "multiple strikes";
+            for (var x = 0; x < btnsToPress.Count; x++)
+            {
+                yield return null;
+                if (willStrike) yield break;
+                if (timeStampsCmdPart[x].Any() && btnsToPress[x] == buttons[5])
+                    yield return string.Format("sendtochat /me Kappa was it really necessary to time a screen press for press #{1} in your command, {0}?", "{0}", x + 1);
+                if (timeStampsCmdPart[x].Any())
+                {
+                    #region TPTimeDetection
+                    var curTimeThresholds = timeStampsCmdPart[x].Where(a => ZenModeActive ? a > Bomb.GetTime() : a < Bomb.GetTime()).ToList();
+                    if (!curTimeThresholds.Any())
+                    {
+                        yield return string.Format("sendtochaterror Your timed interaction has been canceled. There are no remaining times left for press #{0} in the command that was sent.", x + 1);
+                        yield break;
+                    }
+                    long targetTime = ZenModeActive ? curTimeThresholds.Min() : curTimeThresholds.Max();
+                    yield return string.Format("sendtochat Target time for press #{0} in command: {1}", x + 1,
+                        string.Format("{0}:{1}", targetTime / 60, (targetTime % 60).ToString("00")));
+                    var canSkipTime = ZenModeActive ? targetTime > 15 + Bomb.GetTime() : targetTime < Bomb.GetTime() - 15;
+                    var canPlayMusic = ZenModeActive ? targetTime > 10 + Bomb.GetTime() : targetTime < Bomb.GetTime() - 10;
+                    if (canSkipTime) // The previous TP Support had a time skip feature that was used to make the module more convenient. Figured I add that back here.
+                        yield return string.Format("skiptime {0}", targetTime + (ZenModeActive ? -5 : 5));
+                    else if (canPlayMusic)
+                    {
+                        yield return "waiting music";
+                        yield return "sendtochat This press may take a long time, if you wish to cancel this command, do \"!cancel\" now.";
+                    }
+                    do
+                    {
+                        yield return string.Format("trycancel Your timed interaction has been canceled after a total of {0}/{1} presses in the command.", x + 1, btnsToPress.Count);
+                        if ((long)Bomb.GetTime() > targetTime && ZenModeActive)
+                        {
+                            curTimeThresholds = curTimeThresholds.Where(a => a > Bomb.GetTime()).ToList();
+                            if (!curTimeThresholds.Any())
+                            {
+                                yield return string.Format("sendtochaterror Your timed interation has been canceled. There are no remaining times left for press #{0} in the command that was sent.", x + 1);
+                                yield break;
+                            }
+                            targetTime = curTimeThresholds.Min();
+                            yield return string.Format("sendtochat Your timed interaction has been altered. The new time is now {1} for press #{0} in the command that was sent.",
+                                x + 1, string.Format("{0}:{1}", targetTime / 60, (targetTime % 60).ToString("00")));
+                        }
+                        else if ((long)Bomb.GetTime() < targetTime && !ZenModeActive)
+                        {
+                            curTimeThresholds = curTimeThresholds.Where(a => a < Bomb.GetTime()).ToList();
+                            if (!curTimeThresholds.Any())
+                            {
+                                yield return string.Format("sendtochaterror Your timed interaction has been canceled. There are no remaining times left for press #{0} in the command that was sent.", x + 1);
+                                yield break;
+                            }
+                            targetTime = curTimeThresholds.Max();
+                            yield return string.Format("sendtochat Your timed interaction has been altered. The new time is now {1} for press #{0} in the command that was sent.",
+                                x + 1, string.Format("{0}:{1}", targetTime / 60, (targetTime % 60).ToString("00")));
+                        }
+                    }
+                    while ((long)Bomb.GetTime() != targetTime);
+                    #endregion
+                }
+                var curBtn = btnsToPress[x];
+                #region TPStrikeDetection
+                var possibleButtons = new[] { "Red", "Green", "Blue", "Inner", "Outer", "Screen" };
+                var buttonName = buttons.Contains(curBtn) ? possibleButtons[Array.IndexOf(buttons, curBtn)] : "Screen";
+                if (buttonName != "Screen" && !IsBtnCorrect(curBtn) && btnsToPress.Count > 1)
+                {
+                    willStrike = true;
+                    yield return string.Format("strikemessage incorrectly pressing {0} on {1} after {2} press{3} in the TP command specified!", buttonName == "Center" ? "Inner Center" : buttonName == "Outer" ? "Outer Center" : buttonName, Bomb.GetFormattedTime(), x + 1, x == 0 ? "" : "es");
+                }
+                #endregion
+                curBtn.OnInteract();
+                yield return new WaitForSeconds(0.1f);
+            }
+            yield return "end multiple strikes";
+        }
+
+    }
+
+    private bool IsBtnCorrect(KMSelectable userinput) // Method used for strike detection.
+    {
+        int bombSeconds = (int)Bomb.GetTime() % 60;
+        var button = userinput.name;
+
+        switch (currentOrder)
+        {
+            case "PCR":
+                return button == "R";
+            case "PCG":
+                return button == "G";
+            case "PCB":
+                return button == "B";
+            case "SUB":
+                return button == "Outer" && bombSeconds % 11 == 0;
+            case "MIT":
+                return button == "Center" && Modulo(bombSeconds, 10) == Modulo(_moduleId + colorpresses + stage, 10);
+            case "CHK":
+                {
+                    var primesLt20 = new[] { 2, 3, 5, 7, 11, 13, 17, 19 };
+                    return (primesLt20.Contains(_moduleId % 20) && button == "Outer") || (!primesLt20.Contains(_moduleId % 20) && button == "Center");
+                }
+            case "PRN":
+                {
+                    var primesLt20 = new[] { 2, 3, 5, 7, 11, 13, 17, 19 };
+                    return (primesLt20.Contains(_moduleId % 20) && button == "Center") || (!primesLt20.Contains(_moduleId % 20) && button == "Outer");
+                }
+            case "BOB":
+                return button == "Center";
+            case "STR":
+            case "IKE":
+                {
+                    string[] rgb = { "R", "G", "B" };
+                    return rgb[strikeCounter % 3] == button;
+                }
+            case "REP":
+            case "EAT":
+                {
+                    if (previousOrder == "None")
+                        return button == "Center";
+                    else
+                        return previousinput.name == button;
+                }
+
+            default:
+                DebugMsg("Dafuq? Default? How?");
+                return true;
+        }
     }
 
     #endregion
